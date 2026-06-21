@@ -25,10 +25,6 @@ from app.services.database_service import (
     obtener_tipos,
     obtener_tipos_por_id,
 )
-from app.services.movimientos_logic import (
-    buscar_categoria_transferencia,
-    obtener_cuentas,
-)
 from app.services.movement_accounting import (
     create_debt_service,
     create_movement_service,
