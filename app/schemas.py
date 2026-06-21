@@ -92,6 +92,7 @@ class MovementCreateRequest(BaseModel):
     currency_id: int
     type_id: int
     category_id: int | None = None
+    source_account_id: int | None = None
     destination_account_id: int | None = None
     debt_id: int | None = None
     movement_date: date | None = None
@@ -103,6 +104,7 @@ class MovementUpdateRequest(BaseModel):
     type_id: int | None = None
     category_id: int | None = None
     currency_id: int | None = None
+    source_account_id: int | None = None
     destination_account_id: int | None = None
     debt_id: int | None = None
     movement_date: date | None = None
