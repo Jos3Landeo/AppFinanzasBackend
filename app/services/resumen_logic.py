@@ -28,6 +28,7 @@ def calcular_resumen(year: int, month: int):
 
     total_ingresos = {m.nombre_corto: Decimal("0") for m in monedas}
     total_gastos = {m.nombre_corto: Decimal("0") for m in monedas}
+    transferencias_entrantes = {m.nombre_corto: Decimal("0") for m in monedas}
 
     deudas_balance = {m.nombre_corto: Decimal("0") for m in monedas}
     deudas_mov = {m.nombre_corto: Decimal("0") for m in monedas}
@@ -62,6 +63,11 @@ def calcular_resumen(year: int, month: int):
             elif cuenta_destino == "Deudas":
                 deudas_per[moneda] += Decimal(total)
 
+            if cuenta_origen == "Inversiones":
+                transferencias_entrantes[moneda] += Decimal(total)
+            elif cuenta_origen == "Ahorros":
+                transferencias_entrantes[moneda] += Decimal(total)
+
     for moneda, total in deudas_completo:
         deudas_balance[moneda] += Decimal(total)
 
@@ -88,6 +94,7 @@ def calcular_resumen(year: int, month: int):
         moneda.nombre_corto: saldo_inicial.get(moneda.nombre_corto, Decimal("0"))
         + balance.get(moneda.nombre_corto, Decimal("0"))
         - transferencias.get(moneda.nombre_corto, Decimal("0"))
+        + transferencias_entrantes.get(moneda.nombre_corto, Decimal("0"))
         for moneda in monedas
     }
 

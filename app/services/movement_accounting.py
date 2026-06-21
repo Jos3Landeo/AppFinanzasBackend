@@ -143,13 +143,23 @@ def _ensure_category_matches_type(category: Categoria, type_id: int) -> None:
         raise _bad_request('La categoria no corresponde al tipo de movimiento seleccionado')
 
 
-def _validate_transfer_account(account: Cuenta, currency_id: int) -> None:
+def _validate_transfer_account(account: Cuenta, currency_id: int, role: str) -> None:
     if account.id_moneda != currency_id:
-        raise _bad_request('La cuenta destino no pertenece a la moneda seleccionada')
+        raise _bad_request(f'La cuenta {role} no pertenece a la moneda seleccionada')
     if account.main == CUENTA_PRINCIPAL:
-        raise _bad_request('La cuenta destino debe ser una cuenta secundaria')
+        raise _bad_request(f'La cuenta {role} debe ser una cuenta secundaria')
     if account.estado.lower() != 'activo':
-        raise _bad_request('La cuenta destino esta inactiva')
+        raise _bad_request(f'La cuenta {role} esta inactiva')
+
+
+def _secondary_transfer_account_id(db: Session, account_id: int | None) -> int | None:
+    if account_id is None:
+        return None
+
+    account = db.get(Cuenta, account_id)
+    if not account or account.main == CUENTA_PRINCIPAL:
+        return None
+    return account.id
 
 
 def _apply_debt_payment(debt: Deuda, amount: Decimal, movement_date: date) -> None:
@@ -191,6 +201,7 @@ def _resolve_movement_data(
     currency_id: int,
     type_id: int,
     category_id: int | None,
+    source_account_id: int | None,
     destination_account_id: int | None,
     debt_id: int | None,
     movement_date: date | None,
@@ -200,13 +211,15 @@ def _resolve_movement_data(
     resolved_date = movement_date or date.today()
     main_account = _resolve_main_account(db, currency_id)
 
-    source_account_id: int | None = None
+    resolved_source_account_id: int | None = None
     resolved_destination_account_id: int | None = None
     debt: Deuda | None = None
 
     if type_id == 1:
         if category_id is None:
             raise _bad_request('category_id es obligatorio para ingresos')
+        if source_account_id is not None:
+            raise _bad_request('source_account_id solo se permite para transferencias')
         if destination_account_id is not None:
             raise _bad_request('destination_account_id solo se permite para transferencias')
         if debt_id is not None:
@@ -217,38 +230,52 @@ def _resolve_movement_data(
     elif type_id == 2:
         if category_id is None:
             raise _bad_request('category_id es obligatorio para gastos')
+        if source_account_id is not None:
+            raise _bad_request('source_account_id solo se permite para transferencias')
         if destination_account_id is not None:
             raise _bad_request('destination_account_id solo se permite para transferencias')
         if debt_id is not None:
             raise _bad_request('debt_id solo se permite para pagos de deuda')
         category = _resolve_category(db, category_id)
         _ensure_category_matches_type(category, type_id)
-        source_account_id = main_account.id
+        resolved_source_account_id = main_account.id
     elif type_id == 3:
-        if destination_account_id is None:
-            raise _bad_request('destination_account_id es obligatorio para transferencias')
+        if source_account_id is not None and destination_account_id is not None:
+            raise _bad_request('Selecciona solo una cuenta secundaria para la transferencia')
+        if source_account_id is None and destination_account_id is None:
+            raise _bad_request('Debes seleccionar una cuenta secundaria para la transferencia')
 
         category = _resolve_transfer_category(db, type_id)
-        source_account_id = main_account.id
 
-        destination_account = _resolve_account(db, destination_account_id)
-        _validate_transfer_account(destination_account, currency_id)
-        resolved_destination_account_id = destination_account.id
+        if source_account_id is not None:
+            source_account = _resolve_account(db, source_account_id)
+            _validate_transfer_account(source_account, currency_id, 'origen')
+            if source_account.tipo.lower() == 'deudas':
+                raise _bad_request('Para aumentar una deuda usa Registrar deuda. Las transferencias desde Deudas no estan soportadas')
+            if debt_id is not None:
+                raise _bad_request('debt_id solo se permite cuando la cuenta destino es Deudas')
+            resolved_source_account_id = source_account.id
+            resolved_destination_account_id = main_account.id
+        else:
+            resolved_source_account_id = main_account.id
+            destination_account = _resolve_account(db, destination_account_id)
+            _validate_transfer_account(destination_account, currency_id, 'destino')
+            resolved_destination_account_id = destination_account.id
 
-        if destination_account.tipo.lower() == 'deudas':
-            if debt_id is None:
-                raise _bad_request('debt_id es obligatorio cuando la cuenta destino es Deudas')
-            debt = _resolve_debt(db, debt_id)
-            if debt.moneda_id != currency_id:
-                raise _bad_request('La deuda seleccionada no pertenece a la moneda del movimiento')
-            if debt.cuenta_id in (None, destination_account.id):
-                debt.cuenta_id = destination_account.id
-            elif debt.cuenta_id != destination_account.id:
-                raise _bad_request('La deuda seleccionada no pertenece a la cuenta destino elegida')
-            if Decimal(debt.monto_restante) <= ZERO or debt.estado == 'pagado':
-                raise _bad_request(f'La deuda DEU-{debt.id} ya se encuentra pagada')
-        elif debt_id is not None:
-            raise _bad_request('debt_id solo se permite cuando la cuenta destino es Deudas')
+            if destination_account.tipo.lower() == 'deudas':
+                if debt_id is None:
+                    raise _bad_request('debt_id es obligatorio cuando la cuenta destino es Deudas')
+                debt = _resolve_debt(db, debt_id)
+                if debt.moneda_id != currency_id:
+                    raise _bad_request('La deuda seleccionada no pertenece a la moneda del movimiento')
+                if debt.cuenta_id in (None, destination_account.id):
+                    debt.cuenta_id = destination_account.id
+                elif debt.cuenta_id != destination_account.id:
+                    raise _bad_request('La deuda seleccionada no pertenece a la cuenta destino elegida')
+                if Decimal(debt.monto_restante) <= ZERO or debt.estado == 'pagado':
+                    raise _bad_request(f'La deuda DEU-{debt.id} ya se encuentra pagada')
+            elif debt_id is not None:
+                raise _bad_request('debt_id solo se permite cuando la cuenta destino es Deudas')
     else:
         raise _bad_request('type_id no soportado')
 
@@ -257,7 +284,7 @@ def _resolve_movement_data(
         movement_type=movement_type,
         category=category,
         movement_date=resolved_date,
-        source_account_id=source_account_id,
+        source_account_id=resolved_source_account_id,
         destination_account_id=resolved_destination_account_id,
         debt=debt,
     )
@@ -291,6 +318,7 @@ def create_movement_service(payload: MovementCreateRequest) -> MovementResponse:
                 currency_id=payload.currency_id,
                 type_id=payload.type_id,
                 category_id=payload.category_id,
+                source_account_id=payload.source_account_id,
                 destination_account_id=payload.destination_account_id,
                 debt_id=payload.debt_id,
                 movement_date=payload.movement_date,
@@ -349,23 +377,37 @@ def update_movement_service(movement_id: int, payload: MovementUpdateRequest) ->
             final_concept = payload.concept if payload.concept is not None else movement.concepto
             final_amount = payload.amount if payload.amount is not None else movement.monto
 
+            existing_secondary_source_id = _secondary_transfer_account_id(db, movement.cuenta_origen_id)
+            existing_secondary_destination_id = _secondary_transfer_account_id(db, movement.cuenta_destino_id)
+
             if final_type_id == 3:
+                if 'source_account_id' in fields_set:
+                    final_source_account_id = payload.source_account_id
+                elif movement.tipo_id == 3:
+                    final_source_account_id = existing_secondary_source_id
+                else:
+                    final_source_account_id = None
+
                 if 'destination_account_id' in fields_set:
                     final_destination_account_id = payload.destination_account_id
                 elif movement.tipo_id == 3:
-                    final_destination_account_id = movement.cuenta_destino_id
+                    final_destination_account_id = existing_secondary_destination_id
                 else:
                     final_destination_account_id = None
 
+                if 'source_account_id' in fields_set and payload.source_account_id is not None and 'destination_account_id' not in fields_set:
+                    final_destination_account_id = None
+                if 'destination_account_id' in fields_set and payload.destination_account_id is not None and 'source_account_id' not in fields_set:
+                    final_source_account_id = None
+
                 if 'debt_id' in fields_set:
                     final_debt_id = payload.debt_id
-                elif 'destination_account_id' in fields_set and payload.destination_account_id != movement.cuenta_destino_id:
-                    final_debt_id = None
-                elif movement.tipo_id == 3:
+                elif movement.tipo_id == 3 and final_source_account_id is None and final_destination_account_id == existing_secondary_destination_id:
                     final_debt_id = movement.deuda_id
                 else:
                     final_debt_id = None
             else:
+                final_source_account_id = None
                 final_destination_account_id = None
                 final_debt_id = None
 
@@ -374,6 +416,7 @@ def update_movement_service(movement_id: int, payload: MovementUpdateRequest) ->
                 currency_id=final_currency_id,
                 type_id=final_type_id,
                 category_id=final_category_id,
+                source_account_id=final_source_account_id,
                 destination_account_id=final_destination_account_id,
                 debt_id=final_debt_id,
                 movement_date=final_date,
